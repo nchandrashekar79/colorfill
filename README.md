@@ -5,7 +5,9 @@ colour and paint inside the shape like a colouring book. There are 50 levels: th
 shape cycles through the shape library while the slot grows from tiny (level 1) to
 giant (level 50), and the palette grows from 4 colours to 13.
 
-Written as a plain static site: no build step, no dependencies, no server needed.
+Written as a plain static site: no build step, no dependencies, no server needed. The
+board is wide on a desktop screen and square on a phone, so the shape stays big on
+small screens.
 
 ## Run it
 
@@ -66,10 +68,18 @@ the sound setting.
   commands, so scaling one definition to any slot size is a straight linear map. The
   level list reuses the same path data for its SVG thumbnails.
 - The 50 levels are generated, not hand-written: `makeLevels()` steps through the shape
-  library while a size table grows the slot in ten steps, so every level has a unique
+  library while a size step grows the slot in ten steps, so every level has a unique
   shape/size pair and a unique name.
-- The brush width is a fraction of the shape size (16–48 board units), so a tiny shape
-  is not flooded by one stroke and a giant shape is not tedious to fill.
+- The board keeps the aspect ratio of its own box: 1000 × 560 logical units on a wide
+  screen, square on a phone. A level stores a size *step* rather than a size in pixels,
+  and the slot is placed from the short side of the current board, so the shape fills a
+  phone screen instead of staying a fixed pixel size. The smallest step is raised on a
+  nearly square board (`sizeRatioMin()`), because a third of a phone board is too small
+  to paint with a finger. On resize or rotation the level is laid out again and the
+  strokes are scaled with it, so paint survives the change.
+- The brush is a fraction of the shape, kept inside a finger friendly band of 20–56 CSS
+  pixels, so it feels the same on a phone as on a desktop. The outline is likewise 3 CSS
+  pixels wide on any screen.
 - The board is a single `<canvas>`. Hit testing uses `Path2D` with
   `isPointInPath`, and every stroke is clipped to its shape, so paint cannot leak
   outside the outline.

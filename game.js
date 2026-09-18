@@ -24,11 +24,15 @@
     var STAR_THREE_COLOURS = 6;
     var POINTS_PER_SHAPE = 10;
     var POINTS_PER_COLOUR = 25;
+    /* Logical board width. The logical height follows the shape of the element box
+       (wide on desktop, square on phones), so a level fills the board either way. */
     var BOARD_WIDTH = 1000;
     var BOARD_HEIGHT = 560;
-    var BRUSH_MIN_WIDTH = 16;
-    var BRUSH_MAX_WIDTH = 48;
+    /* The brush is a fraction of the shape, kept inside a finger friendly band of CSS
+       pixels, so it feels the same on a phone as on a desktop. */
     var BRUSH_SIZE_RATIO = 0.09;
+    var BRUSH_MIN_CSS = 20;
+    var BRUSH_MAX_CSS = 56;
     var COVERAGE_CELLS = 32;
     var COVERAGE_TARGET = 0.85;
     var OUTLINE_WIDTH = 3;
@@ -186,32 +190,74 @@
 
     var LEVEL_COUNT = 50;
     var LEVELS_PER_STEP = 5;
-    var SIZE_STEPS = [200, 235, 270, 305, 340, 375, 410, 445, 480, 515];
+    /* Sizes are fractions of the board's short side, so a level looks the same on a
+       wide desktop board and on a square phone board — only the pixels differ. The
+       floor is raised on a nearly square board: a phone shape that was a third of
+       the board would be too small to paint with a finger. */
+    var SIZE_STEP_COUNT = 10;
+    var SIZE_RATIO_MAX = 0.92;
+    var SIZE_RATIO_MIN_WIDE = 0.36;
+    var SIZE_RATIO_MIN_SQUARE = 0.55;
     var SIZE_LABELS = ['Tiny', 'Small', 'Little', 'Medium', 'Medium', 'Big', 'Big', 'Huge', 'Huge', 'Giant'];
     var MAX_PALETTE_SIZE = BASE_PALETTE.length;
     var SHAPE_KEYS = Object.keys(SHAPE_CMDS);
 
-    /** Build the level run: shape from the library, size from the step table. */
+    /** The board in logical units, in step with the element box. */
+    var world = { width: BOARD_WIDTH, height: BOARD_HEIGHT };
+
+    /** 0 on a square board, 1 on the wide desktop board. */
+    function boardWideness() {
+        var aspect = world.width / world.height;
+        var widest = BOARD_WIDTH / BOARD_HEIGHT;
+        return Math.max(0, Math.min(1, (aspect - 1) / (widest - 1)));
+    }
+
+    /** The size of the smallest level on the current board. */
+    function sizeRatioMin() {
+        var t = boardWideness();
+        return SIZE_RATIO_MIN_SQUARE + (SIZE_RATIO_MIN_WIDE - SIZE_RATIO_MIN_SQUARE) * t;
+    }
+
+    /** Ten evenly spaced sizes, from the smallest shape up to one that nearly fills the board. */
+    function sizeRatioFor(step) {
+        var index = Math.max(0, Math.min(SIZE_STEP_COUNT - 1, step));
+        var min = sizeRatioMin();
+        return min + ((SIZE_RATIO_MAX - min) * index) / (SIZE_STEP_COUNT - 1);
+    }
+
+    /** Build the level run: shape from the library, size from the step number. */
     function makeLevels() {
         var levels = [];
         for (var index = 0; index < LEVEL_COUNT; index++) {
-            var step = Math.min(SIZE_STEPS.length - 1, Math.floor(index / LEVELS_PER_STEP));
-            var side = SIZE_STEPS[step];
+            var step = Math.min(SIZE_LABELS.length - 1, Math.floor(index / LEVELS_PER_STEP));
             var shape = SHAPE_KEYS[index % SHAPE_KEYS.length];
             levels.push({
                 id: index + 1,
                 name: SIZE_LABELS[step] + ' ' + SHAPE_LABELS[shape],
+                shape: shape,
+                step: step,
                 paletteSize: Math.min(MAX_PALETTE_SIZE, 4 + Math.floor(index / LEVELS_PER_STEP)),
-                slots: [{
-                    shape: shape,
-                    x: round2((BOARD_WIDTH - side) / 2),
-                    y: round2((BOARD_HEIGHT - side) / 2),
-                    w: side,
-                    h: side
-                }]
+                /* Filled in by layoutSlots(), which needs the current board size. */
+                slots: []
             });
         }
         return levels;
+    }
+
+    /**
+     * Place the level's single shape in the middle of the board. The slot side is a
+     * fraction of the short side of the board, so the shape grows with the screen
+     * instead of keeping a fixed size in logical units.
+     */
+    function layoutSlots(level) {
+        var side = Math.round(sizeRatioFor(level.step) * Math.min(world.width, world.height));
+        return [{
+            shape: level.shape,
+            x: round2((world.width - side) / 2),
+            y: round2((world.height - side) / 2),
+            w: side,
+            h: side
+        }];
     }
 
     var LEVELS = makeLevels();
@@ -224,7 +270,8 @@
     var ctx = canvas.getContext('2d');
     /* Offscreen context with an identity transform: used for hit tests and for
        building the coverage masks. It must be board sized, because isPointInPath
-       ignores points that fall outside the canvas. */
+       ignores points that fall outside the canvas; syncCanvasSize() keeps it tall
+       enough for the current board. */
     var probeCanvas = document.createElement('canvas');
     probeCanvas.width = BOARD_WIDTH;
     probeCanvas.height = BOARD_HEIGHT;
@@ -416,13 +463,16 @@
     }
 
     /**
-     * The brush grows with the shape, so a small shape is not flooded by one
-     * stroke and a big shape is not tedious to fill.
+     * The brush grows with the shape, kept between BRUSH_MIN_CSS and BRUSH_MAX_CSS
+     * CSS pixels: a small shape is not flooded by one stroke and a big shape is not
+     * tedious to fill, on any screen size.
      */
     function brushWidth() {
         var slot = currentLevel().slots[0];
-        var width = slot ? slot.w * BRUSH_SIZE_RATIO : BRUSH_MIN_WIDTH;
-        return Math.round(Math.max(BRUSH_MIN_WIDTH, Math.min(BRUSH_MAX_WIDTH, width)));
+        var byShape = slot ? slot.w * BRUSH_SIZE_RATIO : 0;
+        var min = BRUSH_MIN_CSS * view.unitsPerCssPx;
+        var max = BRUSH_MAX_CSS * view.unitsPerCssPx;
+        return Math.round(Math.max(min, Math.min(max, byShape)));
     }
 
     /** Every colour used on this level, finished shape or not. */
@@ -468,6 +518,7 @@
 
     function prepareBoard() {
         var level = currentLevel();
+        level.slots = layoutSlots(level);
         shapePaths = level.slots.map(function (slot) {
             return new Path2D(scalePath(SHAPE_CMDS[slot.shape], slot));
         });
@@ -525,11 +576,11 @@
     }
 
     /**
-     * Size the backing store to the element box. The element box is owned by CSS
-     * (width 100% + aspect-ratio), so this never changes layout — that would fire
-     * another resize event and start a feedback loop.
+     * Size the backing store to the element box and derive the logical board from it.
+     * The element box is owned by CSS (width 100% + aspect-ratio), so this never
+     * changes layout — that would fire another resize event and start a feedback loop.
      */
-    function resizeCanvas() {
+    function syncCanvasSize() {
         var rect = canvas.getBoundingClientRect();
         var dpr = window.devicePixelRatio || 1;
         var cssWidth = Math.max(240, Math.round(rect.width || BOARD_WIDTH));
@@ -541,13 +592,76 @@
             canvas.width = pixelWidth;
             canvas.height = pixelHeight;
         }
+        if (!canvas.width || !canvas.height) {
+            return;
+        }
 
-        view.scale = canvas.width / BOARD_WIDTH;
-        view.unitsPerCssPx = BOARD_WIDTH / cssWidth;
+        /* The logical board keeps the aspect ratio of the element box, so one uniform
+           scale maps it onto the canvas with nothing left over. */
+        world.width = BOARD_WIDTH;
+        world.height = (BOARD_WIDTH * canvas.height) / canvas.width;
+
+        /* The probe has to cover every point that can be tested. */
+        probeCanvas.height = Math.ceil(world.height) + 2;
+
+        view.scale = canvas.width / world.width;
+        view.unitsPerCssPx = world.width / cssWidth;
+    }
+
+    /**
+     * Re-place the shape after the board changed shape. Paint is kept: stroke points
+     * and brush widths are scaled with the slot, so the picture stays the same.
+     */
+    function reshapeBoard() {
+        var level = currentLevel();
+        var previous = level.slots[0];
+        prepareBoard();
+        var current = level.slots[0];
+
+        if (previous && previous.w === current.w && previous.x === current.x && previous.y === current.y) {
+            return false;
+        }
+        if (!previous) {
+            return true;
+        }
+        var scale = current.w / previous.w;
+        state.strokes.forEach(function (stroke) {
+            stroke.points = stroke.points.map(function (point) {
+                return {
+                    x: round2(current.x + (point.x - previous.x) * scale),
+                    y: round2(current.y + (point.y - previous.y) * scale)
+                };
+            });
+            stroke.width = brushWidth();
+        });
+        return true;
+    }
+
+    function handleResize() {
+        var previousHeight = world.height;
+        syncCanvasSize();
+        if (world.height === previousHeight) {
+            renderBoard();
+            return;
+        }
+        reshapeBoard();
+        if (state.strokes.length) {
+            replayStrokes();
+            return;
+        }
+        lastMeterPercent = -1;
         renderBoard();
+        updateMeter();
     }
 
     function renderBoard() {
+        /* The element box can change without a resize event (CSS breakpoint, zoom,
+           an embedded frame). One cheap check keeps the buffer and the layout honest. */
+        if (Math.round(canvas.getBoundingClientRect().width * (window.devicePixelRatio || 1)) !== canvas.width) {
+            handleResize();
+            return;
+        }
+
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.setTransform(view.scale, 0, 0, view.scale, 0, 0);
@@ -738,8 +852,8 @@
     function toBoardPoint(event) {
         var rect = canvas.getBoundingClientRect();
         return {
-            x: ((event.clientX - rect.left) / rect.width) * BOARD_WIDTH,
-            y: ((event.clientY - rect.top) / rect.height) * BOARD_HEIGHT
+            x: ((event.clientX - rect.left) / rect.width) * world.width,
+            y: ((event.clientY - rect.top) / rect.height) * world.height
         };
     }
 
@@ -988,8 +1102,9 @@
         prepareBoard();
         resetGrids();
         renderPalette();
-        resizeCanvas();
+        syncCanvasSize();
         lastMeterPercent = -1;
+        renderBoard();
         updateHud();
         closeOverlays();
     }
@@ -1061,7 +1176,7 @@
             starRow.textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
 
             tile.appendChild(number);
-            tile.appendChild(shapePreview(level.slots[0].shape));
+            tile.appendChild(shapePreview(level.shape));
             tile.appendChild(name);
             tile.appendChild(starRow);
             levelGridEl.appendChild(tile);
@@ -1207,6 +1322,10 @@
        12. Start
        ========================================================== */
 
-    window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    if (typeof window.ResizeObserver === 'function') {
+        new ResizeObserver(handleResize).observe(canvas);
+    }
     loadLevel(state.levelId);
 })();
