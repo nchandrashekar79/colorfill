@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ColorFill Kids — 50 level colouring game</title>
+    <title>ColorFill Kids — colouring game with shapes and letters</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -11,7 +11,7 @@
         <header class="hud">
             <div class="hud-title">
                 <h1>ColorFill Dhanya </h1>
-                <p class="level-name" id="levelName">Level 1 of 50 — Tiny circle</p>
+                <p class="level-name" id="levelName">Level 1 of 70 — Tiny circle</p>
             </div>
 
             <dl class="stats">
@@ -62,8 +62,9 @@
     <div class="overlay" id="levelsOverlay" hidden>
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="levelsTitle">
             <h2 id="levelsTitle">Choose a level</h2>
-            <p class="modal-sub">Total stars: <strong id="totalStarsValue">0 / 150</strong></p>
-            <div class="level-grid" id="levelGrid"></div>
+            <p class="modal-sub">Total stars: <strong id="totalStarsValue">0 / 210</strong></p>
+            <div class="level-tabs" id="levelTabs" role="tablist" aria-label="Level groups"></div>
+            <div class="level-grid" id="levelGrid" role="tabpanel" aria-label="Levels"></div>
             <div class="modal-actions">
                 <button type="button" class="btn" id="closeLevelsBtn">Close</button>
             </div>

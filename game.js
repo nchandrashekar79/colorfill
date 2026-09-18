@@ -101,6 +101,311 @@
         arrow: 'arrow'
     };
 
+    /* ==========================================================
+       1b. Letter shapes
+       The alphabet joins the shape library, but the outlines are traced
+       instead of typed out: a bold sans-serif glyph is rastered on an
+       offscreen canvas, its edge is followed pixel by pixel and the result
+       is simplified into a polygon in the same 100 x 100 unit box as the
+       hand written shapes. Capitals are traced from A to Z and small
+       letters from a to z, one letter per level. A counter (the hole in an
+       O, the bowl of an a) falls out of the trace already wound the other
+       way, so fills, clips and hit tests treat it as a hole with no extra
+       work. A letter is traced the first time a level needs it and is then
+       cached for the session.
+       ========================================================== */
+
+    var LETTER_KEYS_UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+    var LETTER_KEYS_LOWER = 'abcdefghijklmnopqrstuvwxyz'.split('');
+    var LETTER_FONT = 'Arial, "Helvetica Neue", Helvetica, Verdana, sans-serif';
+    var LETTER_RASTER = 192;
+    var LETTER_GLYPH_RATIO = 0.72;
+    var LETTER_FIT = 96;
+    var LETTER_SIMPLIFY = 1.1;
+    var LETTER_MIN_AREA = 12;
+    /* A block, so a level still paints if a browser refuses the glyph raster. */
+    var LETTER_FALLBACK = 'M 8 8 L 92 8 L 92 92 L 8 92 Z';
+    var LETTER_CACHE = Object.create(null);
+
+    LETTER_KEYS_UPPER.forEach(function (letter) {
+        SHAPE_LABELS[letter] = 'capital ' + letter;
+    });
+    LETTER_KEYS_LOWER.forEach(function (letter) {
+        SHAPE_LABELS[letter] = 'small ' + letter;
+    });
+
+    function isLetterKey(key) {
+        return typeof key === 'string' && key.length === 1 && /^[A-Za-z]$/.test(key);
+    }
+
+    /** The path of any shape; a letter is traced and cached the first time it is asked for. */
+    function shapeCommands(key) {
+        if (SHAPE_CMDS[key]) {
+            return SHAPE_CMDS[key];
+        }
+        if (!isLetterKey(key)) {
+            return null;
+        }
+        if (!(key in LETTER_CACHE)) {
+            LETTER_CACHE[key] = traceLetterPath(key) || LETTER_FALLBACK;
+        }
+        return LETTER_CACHE[key];
+    }
+
+    /** Raster the glyph on a throwaway canvas. Only the alpha channel is read back. */
+    function letterPixels(character) {
+        var glyphCanvas = document.createElement('canvas');
+        glyphCanvas.width = LETTER_RASTER;
+        glyphCanvas.height = LETTER_RASTER;
+        var glyphContext = glyphCanvas.getContext('2d');
+        if (!glyphContext) {
+            return null;
+        }
+        glyphContext.fillStyle = '#000000';
+        glyphContext.textAlign = 'center';
+        glyphContext.textBaseline = 'middle';
+        glyphContext.font =
+            '700 ' + Math.round(LETTER_RASTER * LETTER_GLYPH_RATIO) + 'px ' + LETTER_FONT;
+        glyphContext.fillText(character, LETTER_RASTER / 2, LETTER_RASTER / 2);
+        try {
+            return glyphContext.getImageData(0, 0, LETTER_RASTER, LETTER_RASTER);
+        } catch (error) {
+            return null;
+        }
+    }
+
+    /* Directions are 0 = right, 1 = down, 2 = left, 3 = up in raster coordinates. */
+    function stepDirection(from, to, stride) {
+        var dx = (to % stride) - (from % stride);
+        if (dx === 1) {
+            return 0;
+        }
+        if (dx === -1) {
+            return 2;
+        }
+        return to > from ? 1 : 3;
+    }
+
+    /* Prefer the sharpest right turn, so contours that merely touch stay separate. */
+    function turnRank(incoming, outgoing) {
+        if (incoming < 0) {
+            return 0;
+        }
+        var relative = (outgoing - incoming + 4) % 4;
+        if (relative === 1) {
+            return 0;
+        }
+        if (relative === 0) {
+            return 1;
+        }
+        return relative === 3 ? 2 : 3;
+    }
+
+    function polygonArea(points) {
+        var total = 0;
+        for (var i = 0; i < points.length; i++) {
+            var next = points[(i + 1) % points.length];
+            total += points[i].x * next.y - next.x * points[i].y;
+        }
+        return total / 2;
+    }
+
+    /** Douglas-Peucker on a closed loop: opened, thinned, then closed again. */
+    function simplifyLoop(points, epsilon) {
+        if (points.length <= 3) {
+            return points.slice();
+        }
+        var open = points.concat([points[0]]);
+        var keep = new Uint8Array(open.length);
+        var stack = [[0, open.length - 1]];
+        keep[0] = 1;
+        keep[open.length - 1] = 1;
+
+        while (stack.length) {
+            var range = stack.pop();
+            var first = range[0];
+            var last = range[1];
+            if (last - first < 2) {
+                continue;
+            }
+            var farthest = -1;
+            var farthestDistance = 0;
+            for (var i = first + 1; i < last; i++) {
+                var distance = distanceToSegment(
+                    open[i].x, open[i].y,
+                    open[first].x, open[first].y,
+                    open[last].x, open[last].y
+                );
+                if (distance > farthestDistance) {
+                    farthestDistance = distance;
+                    farthest = i;
+                }
+            }
+            if (farthest !== -1 && farthestDistance > epsilon) {
+                keep[farthest] = 1;
+                stack.push([first, farthest], [farthest, last]);
+            }
+        }
+
+        var out = [];
+        for (var index = 0; index < open.length - 1; index++) {
+            if (keep[index]) {
+                out.push(open[index]);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Follow every edge between glyph and background and return one point loop per
+     * contour. Each edge is directed so the glyph stays on its right, which leaves a
+     * hole wound the opposite way around: exactly what a non-zero fill and clip need.
+     */
+    function letterLoops(character) {
+        var image = letterPixels(character);
+        if (!image) {
+            return [];
+        }
+        var size = LETTER_RASTER;
+        var stride = size + 1;
+        var data = image.data;
+        var inside = new Uint8Array(size * size);
+        var count = 0;
+
+        for (var pixel = 0; pixel < inside.length; pixel++) {
+            if (data[pixel * 4 + 3] >= 128) {
+                inside[pixel] = 1;
+                count++;
+            }
+        }
+        if (!count) {
+            return [];
+        }
+
+        var outgoing = new Array(stride * stride);
+
+        function isInside(x, y) {
+            return x >= 0 && y >= 0 && x < size && y < size && inside[y * size + x] === 1;
+        }
+
+        function pushEdge(from, to) {
+            if (outgoing[from]) {
+                outgoing[from].push(to);
+            } else {
+                outgoing[from] = [to];
+            }
+        }
+
+        for (var y = 0; y < size; y++) {
+            for (var x = 0; x < size; x++) {
+                if (inside[y * size + x] !== 1) {
+                    continue;
+                }
+                var topLeft = y * stride + x;
+                var topRight = topLeft + 1;
+                var bottomLeft = topLeft + stride;
+                var bottomRight = bottomLeft + 1;
+                if (!isInside(x, y - 1)) {
+                    pushEdge(topLeft, topRight);
+                }
+                if (!isInside(x + 1, y)) {
+                    pushEdge(topRight, bottomRight);
+                }
+                if (!isInside(x, y + 1)) {
+                    pushEdge(bottomRight, bottomLeft);
+                }
+                if (!isInside(x - 1, y)) {
+                    pushEdge(bottomLeft, topLeft);
+                }
+            }
+        }
+
+        var loops = [];
+        for (var start = 0; start < outgoing.length; start++) {
+            while (outgoing[start] && outgoing[start].length) {
+                var loop = [start];
+                var current = start;
+                for (var guard = 0; guard < 400000; guard++) {
+                    var options = outgoing[current];
+                    if (!options || !options.length) {
+                        break;
+                    }
+                    var incoming = loop.length > 1
+                        ? stepDirection(loop[loop.length - 2], current, stride)
+                        : -1;
+                    var pick = 0;
+                    var bestRank = 4;
+                    for (var option = 0; option < options.length; option++) {
+                        var rank = turnRank(incoming, stepDirection(current, options[option], stride));
+                        if (rank < bestRank) {
+                            bestRank = rank;
+                            pick = option;
+                        }
+                    }
+                    var next = options.splice(pick, 1)[0];
+                    if (next === start) {
+                        break;
+                    }
+                    loop.push(next);
+                    current = next;
+                }
+                if (loop.length >= 4) {
+                    loops.push(loop.map(function (vertex) {
+                        return { x: vertex % stride, y: Math.floor(vertex / stride) };
+                    }));
+                }
+            }
+        }
+        return loops;
+    }
+
+    /** Trace a letter and return its outline as M/L/Z commands in the 100 x 100 box. */
+    function traceLetterPath(character) {
+        var loops;
+        try {
+            loops = letterLoops(character);
+        } catch (error) {
+            return null;
+        }
+
+        var contours = loops.map(function (loop) {
+            return simplifyLoop(loop, LETTER_SIMPLIFY);
+        }).filter(function (points) {
+            return points.length >= 3 && Math.abs(polygonArea(points)) >= LETTER_MIN_AREA;
+        });
+        if (!contours.length) {
+            return null;
+        }
+
+        /* Every letter is fitted to the same square, so a narrow i and a wide W both
+           make a shape that is worth painting. */
+        var minX = Infinity;
+        var minY = Infinity;
+        var maxX = -Infinity;
+        var maxY = -Infinity;
+
+        contours.forEach(function (points) {
+            points.forEach(function (point) {
+                minX = Math.min(minX, point.x);
+                minY = Math.min(minY, point.y);
+                maxX = Math.max(maxX, point.x);
+                maxY = Math.max(maxY, point.y);
+            });
+        });
+
+        var scale = LETTER_FIT / Math.max(1, Math.max(maxX - minX, maxY - minY));
+        var offsetX = (100 - (maxX - minX) * scale) / 2;
+        var offsetY = (100 - (maxY - minY) * scale) / 2;
+
+        return contours.map(function (points) {
+            return points.map(function (point, index) {
+                var x = round2(offsetX + (point.x - minX) * scale);
+                var y = round2(offsetY + (point.y - minY) * scale);
+                return (index === 0 ? 'M ' : 'L ') + x + ' ' + y;
+            }).join(' ') + ' Z';
+        }).join(' ');
+    }
+
     function round2(value) {
         return Math.round(value * 100) / 100;
     }
@@ -188,8 +493,6 @@
        look the same. A level is a single slot centred in the board.
        ========================================================== */
 
-    var LEVEL_COUNT = 50;
-    var LEVELS_PER_STEP = 5;
     /* Sizes are fractions of the board's short side, so a level looks the same on a
        wide desktop board and on a square phone board — only the pixels differ. The
        floor is raised on a nearly square board: a phone shape that was a third of
@@ -200,7 +503,24 @@
     var SIZE_RATIO_MIN_SQUARE = 0.55;
     var SIZE_LABELS = ['Tiny', 'Small', 'Little', 'Medium', 'Medium', 'Big', 'Big', 'Huge', 'Huge', 'Giant'];
     var MAX_PALETTE_SIZE = BASE_PALETTE.length;
-    var SHAPE_KEYS = Object.keys(SHAPE_CMDS);
+    /* One level per shape: the hand written shapes, then capital A-Z, then small a-z. */
+    var SHAPE_KEYS = Object.keys(SHAPE_CMDS).concat(LETTER_KEYS_UPPER, LETTER_KEYS_LOWER);
+    var LEVEL_COUNT = SHAPE_KEYS.length;
+
+    /* The level list is split into two menus, so the alphabet does not bury the shapes. */
+    var LEVEL_GROUPS = {
+        shape: {
+            label: 'Shapes',
+            sections: [{ group: 'shape', title: null }]
+        },
+        alphabet: {
+            label: 'Alphabets',
+            sections: [
+                { group: 'capital', title: 'Capital letters A to Z' },
+                { group: 'small', title: 'Small letters a to z' }
+            ]
+        }
+    };
 
     /** The board in logical units, in step with the element box. */
     var world = { width: BOARD_WIDTH, height: BOARD_HEIGHT };
@@ -225,18 +545,29 @@
         return min + ((SIZE_RATIO_MAX - min) * index) / (SIZE_STEP_COUNT - 1);
     }
 
+    /** The tab a shape belongs to: the shapes, or the alphabet. */
+    function groupOfShape(shapeKey) {
+        if (!isLetterKey(shapeKey)) {
+            return 'shape';
+        }
+        return shapeKey === shapeKey.toUpperCase() ? 'capital' : 'small';
+    }
+
     /** Build the level run: shape from the library, size from the step number. */
     function makeLevels() {
         var levels = [];
         for (var index = 0; index < LEVEL_COUNT; index++) {
-            var step = Math.min(SIZE_LABELS.length - 1, Math.floor(index / LEVELS_PER_STEP));
-            var shape = SHAPE_KEYS[index % SHAPE_KEYS.length];
+            /* The ten sizes are spread evenly over the whole run, so the first level is
+               the smallest shape and the last one nearly fills the board. */
+            var step = Math.min(SIZE_STEP_COUNT - 1, Math.floor((index * SIZE_STEP_COUNT) / LEVEL_COUNT));
+            var shape = SHAPE_KEYS[index];
             levels.push({
                 id: index + 1,
                 name: SIZE_LABELS[step] + ' ' + SHAPE_LABELS[shape],
                 shape: shape,
+                group: groupOfShape(shape),
                 step: step,
-                paletteSize: Math.min(MAX_PALETTE_SIZE, 4 + Math.floor(index / LEVELS_PER_STEP)),
+                paletteSize: Math.min(MAX_PALETTE_SIZE, 4 + step),
                 /* Filled in by layoutSlots(), which needs the current board size. */
                 slots: []
             });
@@ -289,6 +620,7 @@
     var soundBtn = document.getElementById('soundBtn');
     var levelsBtn = document.getElementById('levelsBtn');
     var levelsOverlay = document.getElementById('levelsOverlay');
+    var levelTabsEl = document.getElementById('levelTabs');
     var levelGridEl = document.getElementById('levelGrid');
     var totalStarsEl = document.getElementById('totalStarsValue');
     var closeLevelsBtn = document.getElementById('closeLevelsBtn');
@@ -442,6 +774,8 @@
         palette: [],
         activeColor: null,
         selectedShapeId: null,
+        /* Which tab of the level list is open: the shapes or the alphabet. */
+        levelGroup: 'shape',
         strokes: [],
         filled: new Map(),
         activeStroke: null,
@@ -520,7 +854,7 @@
         var level = currentLevel();
         level.slots = layoutSlots(level);
         shapePaths = level.slots.map(function (slot) {
-            return new Path2D(scalePath(SHAPE_CMDS[slot.shape], slot));
+            return new Path2D(scalePath(shapeCommands(slot.shape), slot));
         });
         shapeGrids = level.slots.map(function (slot, index) {
             return createGrid(shapePaths[index], slot);
@@ -1114,7 +1448,6 @@
     function goToNextLevel() {
         stepLevel(1);
     }
-
     function goToPreviousLevel() {
         stepLevel(-1);
     }
@@ -1145,49 +1478,104 @@
         svg.setAttribute('viewBox', '0 0 100 100');
         svg.setAttribute('class', 'tile-shape');
         svg.setAttribute('aria-hidden', 'true');
+        /* A letter is drawn as text: tracing 52 glyphs just to decorate the level list
+           would stall the dialog, and the preview only hints at what comes next. */
+        if (isLetterKey(shapeKey)) {
+            var text = document.createElementNS(SVG_NS, 'text');
+            text.setAttribute('x', '50');
+            text.setAttribute('y', '50');
+            text.setAttribute('text-anchor', 'middle');
+            text.setAttribute('dominant-baseline', 'central');
+            text.setAttribute('class', 'tile-letter');
+            text.textContent = shapeKey;
+            svg.appendChild(text);
+            return svg;
+        }
+
         var path = document.createElementNS(SVG_NS, 'path');
-        path.setAttribute('d', SHAPE_CMDS[shapeKey]);
+        path.setAttribute('d', shapeCommands(shapeKey));
         svg.appendChild(path);
         return svg;
     }
 
     function renderLevelGrid() {
+        var group = LEVEL_GROUPS[state.levelGroup] || LEVEL_GROUPS.shape;
         var total = 0;
         levelGridEl.textContent = '';
 
+        /* The star total belongs to the whole game, not just the visible tab. */
         LEVELS.forEach(function (level) {
-            var stars = Math.min(3, Math.max(0, Number(progress.stars[level.id]) || 0));
-            total += stars;
+            total += Math.min(3, Math.max(0, Number(progress.stars[level.id]) || 0));
+        });
+        totalStarsEl.textContent = total + ' / ' + LEVELS.length * 3;
 
-            var tile = document.createElement('button');
-            tile.type = 'button';
-            tile.className = 'level-tile' + (stars > 0 ? ' is-complete' : '');
-            tile.dataset.level = String(level.id);
-            tile.setAttribute('aria-label', 'Level ' + level.id + ' — ' + level.name + ', ' + stars + ' of 3 stars');
-
-            var number = document.createElement('span');
-            number.className = 'tile-num';
-            number.textContent = String(level.id);
-
-            var name = document.createElement('span');
-            name.className = 'tile-name';
-            name.textContent = level.name;
-
-            var starRow = document.createElement('span');
-            starRow.className = 'tile-stars';
-            starRow.textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
-
-            tile.appendChild(number);
-            tile.appendChild(shapePreview(level.shape));
-            tile.appendChild(name);
-            tile.appendChild(starRow);
-            levelGridEl.appendChild(tile);
+        group.sections.forEach(function (section) {
+            var levels = LEVELS.filter(function (level) {
+                return level.group === section.group;
+            });
+            if (!levels.length) {
+                return;
+            }
+            if (section.title) {
+                var heading = document.createElement('p');
+                heading.className = 'level-group-title';
+                heading.textContent = section.title;
+                levelGridEl.appendChild(heading);
+            }
+            levels.forEach(function (level) {
+                levelGridEl.appendChild(levelTile(level));
+            });
         });
 
-        totalStarsEl.textContent = total + ' / ' + LEVELS.length * 3;
+        renderLevelTabs();
+    }
+
+    function levelTile(level) {
+        var stars = Math.min(3, Math.max(0, Number(progress.stars[level.id]) || 0));
+        var tile = document.createElement('button');
+        tile.type = 'button';
+        tile.className = 'level-tile' + (stars > 0 ? ' is-complete' : '');
+        tile.dataset.level = String(level.id);
+        tile.setAttribute('aria-label', 'Level ' + level.id + ' — ' + level.name + ', ' + stars + ' of 3 stars');
+
+        var number = document.createElement('span');
+        number.className = 'tile-num';
+        number.textContent = String(level.id);
+
+        var name = document.createElement('span');
+        name.className = 'tile-name';
+        name.textContent = level.name;
+
+        var starRow = document.createElement('span');
+        starRow.className = 'tile-stars';
+        starRow.textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
+
+        tile.appendChild(number);
+        tile.appendChild(shapePreview(level.shape));
+        tile.appendChild(name);
+        tile.appendChild(starRow);
+        return tile;
+    }
+
+    function renderLevelTabs() {
+        levelTabsEl.textContent = '';
+        Object.keys(LEVEL_GROUPS).forEach(function (key) {
+            var tab = document.createElement('button');
+            tab.type = 'button';
+            tab.className = 'tab' + (key === state.levelGroup ? ' is-active' : '');
+            tab.id = 'levelTab-' + key;
+            tab.dataset.group = key;
+            tab.setAttribute('role', 'tab');
+            tab.setAttribute('aria-selected', key === state.levelGroup ? 'true' : 'false');
+            tab.textContent = LEVEL_GROUPS[key].label;
+            levelTabsEl.appendChild(tab);
+        });
+        levelGridEl.setAttribute('aria-labelledby', 'levelTab-' + state.levelGroup);
     }
 
     function openLevels() {
+        /* The list opens on the tab the current level lives in. */
+        state.levelGroup = groupOfShape(currentLevel().shape) === 'shape' ? 'shape' : 'alphabet';
         renderLevelGrid();
         winOverlay.hidden = true;
         levelsOverlay.hidden = false;
@@ -1278,6 +1666,30 @@
         var tile = event.target.closest ? event.target.closest('.level-tile') : null;
         if (tile) {
             loadLevel(Number(tile.dataset.level));
+        }
+    });
+
+    levelTabsEl.addEventListener('click', function (event) {
+        var tab = event.target.closest ? event.target.closest('.tab') : null;
+        if (tab && tab.dataset.group !== state.levelGroup) {
+            state.levelGroup = tab.dataset.group;
+            renderLevelGrid();
+        }
+    });
+
+    levelTabsEl.addEventListener('keydown', function (event) {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+            return;
+        }
+        event.preventDefault();
+        var keys = Object.keys(LEVEL_GROUPS);
+        var step = event.key === 'ArrowRight' ? 1 : keys.length - 1;
+        var index = keys.indexOf(state.levelGroup);
+        state.levelGroup = keys[(index + step) % keys.length];
+        renderLevelGrid();
+        var active = levelTabsEl.querySelector('.tab.is-active');
+        if (active) {
+            active.focus();
         }
     });
 
