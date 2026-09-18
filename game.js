@@ -637,28 +637,28 @@
         return true;
     }
 
-    function handleResize() {
+    /**
+     * Bring the buffer, the logical board and the slot layout in step with the element
+     * box. Returns true when the layout changed and the paint has to be rebuilt.
+     */
+    function syncBoardLayout() {
         var previousHeight = world.height;
         syncCanvasSize();
         if (world.height === previousHeight) {
-            renderBoard();
-            return;
+            return false;
         }
         reshapeBoard();
-        if (state.strokes.length) {
-            replayStrokes();
-            return;
-        }
         lastMeterPercent = -1;
-        renderBoard();
         updateMeter();
+        return state.strokes.length > 0;
     }
 
     function renderBoard() {
-        /* The element box can change without a resize event (CSS breakpoint, zoom,
-           an embedded frame). One cheap check keeps the buffer and the layout honest. */
-        if (Math.round(canvas.getBoundingClientRect().width * (window.devicePixelRatio || 1)) !== canvas.width) {
-            handleResize();
+        /* Every draw goes through here, so the layout can never be stale: the element
+           box changes without a resize event on a CSS breakpoint, on zoom, and inside
+           an embedded frame. */
+        if (syncBoardLayout()) {
+            replayStrokes();
             return;
         }
 
@@ -1099,10 +1099,12 @@
         progress.lastLevel = state.levelId;
         saveProgress();
 
+        /* The board must know its own size before the level is laid out, otherwise the
+           shape is placed for a board that is not on screen. */
+        syncCanvasSize();
         prepareBoard();
         resetGrids();
         renderPalette();
-        syncCanvasSize();
         lastMeterPercent = -1;
         renderBoard();
         updateHud();
@@ -1322,10 +1324,10 @@
        12. Start
        ========================================================== */
 
-    window.addEventListener('resize', handleResize);
-    window.addEventListener('orientationchange', handleResize);
+    window.addEventListener('resize', renderBoard);
+    window.addEventListener('orientationchange', renderBoard);
     if (typeof window.ResizeObserver === 'function') {
-        new ResizeObserver(handleResize).observe(canvas);
+        new ResizeObserver(renderBoard).observe(canvas);
     }
     loadLevel(state.levelId);
 })();
