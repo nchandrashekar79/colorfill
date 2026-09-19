@@ -1,10 +1,12 @@
 # ColorFill Kids
 
 A small browser colouring game. Each level shows **one shape at a time**. Pick a
-colour and paint inside the shape like a colouring book. There are 70 levels: the
-shape library runs from a circle to an arrow, then the alphabet — capital `A` to `Z`,
-and then small `a` to `z` — while the slot grows from tiny (level 1) to giant
-(level 70) and the palette grows from 4 colours to 13.
+colour and paint inside the shape like a colouring book. There are 78 levels: eight
+pre-writing **line patterns** first (standing line, sleeping line, right and left
+slanting lines, right, left, up and down curves), then the shape library from a circle
+to an arrow, then the alphabet — capital `A` to `Z`, and then small `a` to `z` — while
+the slot grows from tiny (level 1) to giant (level 78) and the palette grows from 4
+colours to 13.
 
 Written as a plain static site: no build step, no dependencies, no server needed. The
 board is wide on a desktop screen and square on a phone, so the shape stays big on
@@ -36,11 +38,11 @@ Then open <http://localhost:8000>.
   time — painting does not have to be finished first.
 - The win dialog has the same buttons, plus **Play again** and **Levels**.
 - **Levels** opens the level list, with a shape preview, the level name and the stars
-  earned for each one. The list is split into two menus: **Shapes** (levels 1–18) and
-  **Alphabets** (levels 19–70, in a capital `A`–`Z` block and a small `a`–`z` block).
-  It opens on the menu the current level belongs to; the arrow keys move between menus
-  while a tab has focus.
-- On level 1 **Previous level** is disabled; on level 70 **Next level** opens the level
+  earned for each one. The list is split into three menus: **Line Patterns** (levels
+  1–8), **Shapes** (levels 9–26) and **Alphabets** (levels 27–78, in a capital `A`–`Z`
+  block and a small `a`–`z` block). It opens on the menu the current level belongs to;
+  the arrow keys move between menus while a tab has focus.
+- On level 1 **Previous level** is disabled; on level 78 **Next level** opens the level
   list instead.
 - **Keyboard:** arrow keys (`←` / `→`, or `PageUp` / `PageDown`) change level. With the
   board focused, `Enter` or `Space` fills the shape in one go.
@@ -80,10 +82,16 @@ the sound setting.
   once per session and cached, so a letter level costs a few milliseconds the first
   time it is opened. The level list draws letters as SVG text instead, to keep the
   dialog instant.
-- The 70 levels are generated, not hand-written: `makeLevels()` walks the shape keys
+- The 78 levels are generated, not hand-written: `makeLevels()` walks the shape keys
   in order while ten size steps are spread evenly over the run, so every level has a
   unique shape/size pair and a unique name. Every level also carries a `group`
-  (`shape`, `capital` or `small`), which is what the level list tabs filter on.
+  (`lines`, `shape`, `capital` or `small`), which is what the level list tabs filter on.
+- The line patterns are generated the same way as every other shape, from a centerline
+  and a thickness: a straight line is two points, a curve is a sampled circular arc.
+  `linePath()` offsets the centerline to both sides by half the thickness, closes it
+  with two round caps and emits the usual `M`/`L`/`C`/`Z` commands, so a pattern is a
+  closed band in the 100 × 100 box — it fills, clips, hit tests and previews in the
+  level list with no change to the paint engine.
 - The board keeps the aspect ratio of its own box: 1000 × 560 logical units on a wide
   screen, square on a phone. A level stores a size *step* rather than a size in pixels,
   and the slot is placed from the short side of the current board, so the shape fills a

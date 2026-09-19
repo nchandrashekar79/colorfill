@@ -1,5 +1,5 @@
 /*
- * ColorFill Kids — paint one shape per level, 50 levels played in any order.
+ * ColorFill Kids — paint one shape per level, played in any order.
  *
  * Free colouring: there is no right or wrong colour. The player presses and drags
  * inside the shape to paint it like a colouring book; strokes are clipped to the
@@ -19,7 +19,9 @@
     var SELECTED_COLOUR = '#f59e0b';
     /* One shape at a time: a level is complete when its single shape is painted. */
     var SHAPES_PER_LEVEL = 1;
-    var STORAGE_KEY = 'colorfill-kids-v2';
+    /* v3: the line patterns were added in front of the run, so every level id moved
+       and v2 star records no longer describe the level they are stored against. */
+    var STORAGE_KEY = 'colorfill-kids-v3';
     var STAR_TWO_COLOURS = 3;
     var STAR_THREE_COLOURS = 6;
     var POINTS_PER_SHAPE = 10;
@@ -100,6 +102,151 @@
         teardrop: 'teardrop',
         arrow: 'arrow'
     };
+
+    /* ==========================================================
+       1a. Line patterns
+       The eight pre-writing patterns are paintable like every
+       other shape: each one is the outline of a thick, round
+       capped line in the same 100 x 100 unit box, so the paint
+       engine, the coverage grid and the level thumbnails all
+       work on them unchanged. They are generated instead of
+       hand written: a centerline is offset to both sides by half
+       the line thickness and closed with round caps, which
+       leaves a closed band that can be filled, clipped and hit
+       tested exactly like a circle or a letter.
+       ========================================================== */
+
+    var LINE_THICKNESS = 20;
+    var LINE_CURVE_SAMPLES = 20;
+    var LINE_PATTERN_KEYS = [
+        'standingLine',
+        'sleepingLine',
+        'rightSlantingLine',
+        'leftSlantingLine',
+        'rightCurve',
+        'leftCurve',
+        'upCurve',
+        'downCurve'
+    ];
+
+    var LINE_PATTERN_LABELS = {
+        standingLine: 'standing line',
+        sleepingLine: 'sleeping line',
+        rightSlantingLine: 'right slanting line',
+        leftSlantingLine: 'left slanting line',
+        rightCurve: 'right curve',
+        leftCurve: 'left curve',
+        upCurve: 'up curve',
+        downCurve: 'down curve'
+    };
+
+    function formatPoint(point) {
+        return round2(point.x) + ' ' + round2(point.y);
+    }
+
+    /** Cubic segments for a circular arc. A negative sweep turns the other way. */
+    function arcSegments(centre, radius, startAngle, endAngle) {
+        var sweep = endAngle - startAngle;
+        var steps = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2)));
+        var step = sweep / steps;
+        var control = (4 / 3) * Math.tan(step / 4);
+        var commands = [];
+
+        for (var index = 0; index < steps; index++) {
+            var from = startAngle + index * step;
+            var to = from + step;
+            var fromX = centre.x + radius * Math.cos(from);
+            var fromY = centre.y + radius * Math.sin(from);
+            var toX = centre.x + radius * Math.cos(to);
+            var toY = centre.y + radius * Math.sin(to);
+            commands.push(
+                'C ' + formatPoint({
+                    x: fromX - radius * control * Math.sin(from),
+                    y: fromY + radius * control * Math.cos(from)
+                }) + ' ' + formatPoint({
+                    x: toX + radius * control * Math.sin(to),
+                    y: toY - radius * control * Math.cos(to)
+                }) + ' ' + formatPoint({ x: toX, y: toY })
+            );
+        }
+        return commands;
+    }
+
+    /** A straight centerline needs only its two ends. */
+    function straightLine(from, to) {
+        return [from, to];
+    }
+
+    /** Sample a circular arc into a centerline. Degrees, 0 pointing right, y down. */
+    function arcPoints(centre, radius, startDegrees, endDegrees, samples) {
+        var points = [];
+        for (var index = 0; index <= samples; index++) {
+            var angle = (startDegrees + ((endDegrees - startDegrees) * index) / samples) * (Math.PI / 180);
+            points.push({
+                x: centre.x + radius * Math.cos(angle),
+                y: centre.y + radius * Math.sin(angle)
+            });
+        }
+        return points;
+    }
+
+    /**
+     * Turn a centerline into the outline of a thick line with round caps. Walking the
+     * left offset forward, around the far cap, back along the right offset and around
+     * the near cap gives one closed contour: the band that gets painted.
+     */
+    function linePath(points, thickness) {
+        var radius = thickness / 2;
+        var left = [];
+        var right = [];
+
+        points.forEach(function (point, index) {
+            var before = points[Math.max(0, index - 1)];
+            var after = points[Math.min(points.length - 1, index + 1)];
+            var dx = after.x - before.x;
+            var dy = after.y - before.y;
+            var length = Math.hypot(dx, dy) || 1;
+            var nx = -dy / length;
+            var ny = dx / length;
+            left.push({ x: point.x + nx * radius, y: point.y + ny * radius });
+            right.push({ x: point.x - nx * radius, y: point.y - ny * radius });
+        });
+
+        var first = points[0];
+        var last = points[points.length - 1];
+        var endAngle = Math.atan2(last.y - points[points.length - 2].y, last.x - points[points.length - 2].x);
+        var startAngle = Math.atan2(points[1].y - first.y, points[1].x - first.x);
+
+        var commands = ['M ' + formatPoint(left[0])];
+        left.slice(1).forEach(function (point) {
+            commands.push('L ' + formatPoint(point));
+        });
+        /* Each cap leaves the left offset and rejoins the right one, sweeping the way
+           the line travels (far end) or the way it came from (near end). */
+        commands = commands.concat(arcSegments(last, radius, endAngle + Math.PI / 2, endAngle - Math.PI / 2));
+        for (var index = right.length - 1; index >= 0; index--) {
+            commands.push('L ' + formatPoint(right[index]));
+        }
+        commands = commands.concat(arcSegments(first, radius, startAngle - Math.PI / 2, startAngle - 3 * Math.PI / 2));
+        commands.push('Z');
+        return commands.join(' ');
+    }
+
+    var LINE_PATTERN_POINTS = {
+        standingLine: straightLine({ x: 50, y: 12 }, { x: 50, y: 88 }),
+        sleepingLine: straightLine({ x: 13, y: 50 }, { x: 87, y: 50 }),
+        rightSlantingLine: straightLine({ x: 20, y: 20 }, { x: 80, y: 80 }),
+        leftSlantingLine: straightLine({ x: 20, y: 80 }, { x: 80, y: 20 }),
+        rightCurve: arcPoints({ x: 40, y: 50 }, 28, -75, 75, LINE_CURVE_SAMPLES),
+        leftCurve: arcPoints({ x: 60, y: 50 }, 28, 105, 255, LINE_CURVE_SAMPLES),
+        upCurve: arcPoints({ x: 50, y: 36 }, 26, 30, 150, LINE_CURVE_SAMPLES),
+        downCurve: arcPoints({ x: 50, y: 64 }, 26, 210, 330, LINE_CURVE_SAMPLES)
+    };
+
+    LINE_PATTERN_KEYS.forEach(function (key) {
+        SHAPE_CMDS[key] = linePath(LINE_PATTERN_POINTS[key], LINE_THICKNESS);
+        SHAPE_LABELS[key] = LINE_PATTERN_LABELS[key];
+    });
 
     /* ==========================================================
        1b. Letter shapes
@@ -488,9 +635,10 @@
 
     /* ==========================================================
        3. Level table
-       50 levels, one shape at a time. The shape cycles through the
-       library while the size grows in ten steps, so no two levels
-       look the same. A level is a single slot centred in the board.
+       One level per shape: the eight line patterns first, then the
+       hand written shapes, then the alphabet, while the size grows
+       in ten steps so no two levels look the same. A level is a
+       single slot centred in the board.
        ========================================================== */
 
     /* Sizes are fractions of the board's short side, so a level looks the same on a
@@ -503,12 +651,21 @@
     var SIZE_RATIO_MIN_SQUARE = 0.55;
     var SIZE_LABELS = ['Tiny', 'Small', 'Little', 'Medium', 'Medium', 'Big', 'Big', 'Huge', 'Huge', 'Giant'];
     var MAX_PALETTE_SIZE = BASE_PALETTE.length;
-    /* One level per shape: the hand written shapes, then capital A-Z, then small a-z. */
-    var SHAPE_KEYS = Object.keys(SHAPE_CMDS).concat(LETTER_KEYS_UPPER, LETTER_KEYS_LOWER);
+    /* One level per shape: the line patterns, then the hand written shapes, then
+       capital A-Z, then small a-z. */
+    var HAND_SHAPE_KEYS = Object.keys(SHAPE_CMDS).filter(function (key) {
+        return LINE_PATTERN_KEYS.indexOf(key) === -1;
+    });
+    var SHAPE_KEYS = LINE_PATTERN_KEYS.concat(HAND_SHAPE_KEYS, LETTER_KEYS_UPPER, LETTER_KEYS_LOWER);
     var LEVEL_COUNT = SHAPE_KEYS.length;
 
-    /* The level list is split into two menus, so the alphabet does not bury the shapes. */
+    /* The level list is split into three menus, so the alphabet does not bury the
+       shapes, and the line patterns stay in front of both. */
     var LEVEL_GROUPS = {
+        lines: {
+            label: 'Line Patterns',
+            sections: [{ group: 'lines', title: null }]
+        },
         shape: {
             label: 'Shapes',
             sections: [{ group: 'shape', title: null }]
@@ -545,8 +702,11 @@
         return min + ((SIZE_RATIO_MAX - min) * index) / (SIZE_STEP_COUNT - 1);
     }
 
-    /** The tab a shape belongs to: the shapes, or the alphabet. */
+    /** The tab a shape belongs to: the line patterns, the shapes, or the alphabet. */
     function groupOfShape(shapeKey) {
+        if (LINE_PATTERN_KEYS.indexOf(shapeKey) !== -1) {
+            return 'lines';
+        }
         if (!isLetterKey(shapeKey)) {
             return 'shape';
         }
@@ -1575,7 +1735,8 @@
 
     function openLevels() {
         /* The list opens on the tab the current level lives in. */
-        state.levelGroup = groupOfShape(currentLevel().shape) === 'shape' ? 'shape' : 'alphabet';
+        var group = groupOfShape(currentLevel().shape);
+        state.levelGroup = group === 'capital' || group === 'small' ? 'alphabet' : group;
         renderLevelGrid();
         winOverlay.hidden = true;
         levelsOverlay.hidden = false;
