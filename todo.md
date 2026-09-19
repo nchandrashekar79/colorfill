@@ -1,0 +1,1 @@
+create lines stright, vertical line , slash lines, circle, off circle , full circle
