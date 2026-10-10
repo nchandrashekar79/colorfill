@@ -31,12 +31,13 @@
 
             <div class="hud-actions">
                 <button type="button" class="btn" id="soundBtn" aria-pressed="true">Sound: on</button>
+                <button type="button" class="btn" id="lockBtn" aria-pressed="false">Lock</button>
                 <button type="button" class="btn" id="levelsBtn">Levels</button>
             </div>
         </header>
 
         <section class="panel">
-            <p class="panel-title">Pick a colour, then press and drag inside the shape to paint it in.</p>
+            <p class="panel-title">Pick a colour and drag inside the shape to paint it. Switch to the eraser to take colour away again.</p>
             <div class="palette" id="palette" role="group" aria-label="Colour palette"></div>
             <p class="hint" id="starHint">Finish the shape for ★, use 3 colours for ★★ and 6 for ★★★.</p>
         </section>
@@ -44,7 +45,7 @@
         <section class="board-panel">
             <canvas id="board" class="board" tabindex="0" width="1000" height="560"
                     aria-label="Colouring board. Press and drag inside the shape to paint it."
-                    title="Paint by dragging. Keyboard: Enter fills the shape, arrow keys change level."></canvas>
+                    title="Paint by dragging. Keyboard: E switches to the eraser, Enter fills the shape, arrow keys change level."></canvas>
             <div class="meter" id="paintMeter" role="progressbar" aria-label="Shape painted"
                  aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                 <span class="meter-fill" id="meterFill"></span>
@@ -54,6 +55,7 @@
         <div class="actions">
             <button type="button" class="btn" id="undoBtn">Undo</button>
             <button type="button" class="btn" id="clearBtn">Clear</button>
+            <button type="button" class="btn" id="eraserBtn" aria-pressed="false">Eraser</button>
             <button type="button" class="btn" id="prevBtn">← Previous level</button>
             <button type="button" class="btn btn-primary" id="nextBtn">Next level →</button>
         </div>

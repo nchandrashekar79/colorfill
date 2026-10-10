@@ -29,8 +29,17 @@ Then open <http://localhost:8000>.
 
 1. Pick a colour from the palette.
 2. Press and drag inside the shape to paint it. Strokes stay inside the outline.
-3. The shape is finished when it is 85% painted; it then snaps to a solid fill and
+3. **Eraser** turns the brush into an eraser, which takes colour away again; picking a
+   colour always switches back to the brush. The active tool shows on the button —
+   plain **Eraser** for the brush, `🧽 Eraser: on` for the eraser. The eraser is wider
+   than the brush, and a swipe that leaves the shape less than 85% painted withdraws
+   the solid fill, so the level has to be finished again.
+4. The shape is finished when it is 85% painted; it then snaps to a solid fill and
    the level is complete.
+
+**Lock** in the header holds the page still while drawing: while it is on the page cannot
+scroll, pan or select, so a stroke that reaches the edge of the board cannot drag the
+board out of view. The setting is remembered, like the sound setting.
 
 ### Moving between levels
 
@@ -45,7 +54,8 @@ Then open <http://localhost:8000>.
 - On level 1 **Previous level** is disabled; on level 78 **Next level** opens the level
   list instead.
 - **Keyboard:** arrow keys (`←` / `→`, or `PageUp` / `PageDown`) change level. With the
-  board focused, `Enter` or `Space` fills the shape in one go.
+  board focused, `Enter` or `Space` fills the shape in one go and `E` switches between
+  the brush and the eraser.
 
 ### Stars and score
 
@@ -101,10 +111,20 @@ the sound setting.
   strokes are scaled with it, so paint survives the change.
 - The brush is a fraction of the shape, kept inside a finger friendly band of 20–56 CSS
   pixels, so it feels the same on a phone as on a desktop. The outline is likewise 3 CSS
-  pixels wide on any screen.
+  pixels wide on any screen. The eraser is the same band multiplied by
+  `ERASER_SIZE_MULTIPLIER`, so it stays finger friendly while clearing a mistake fast.
+- The eraser is a stroke like any other: it is painted in the paper's white and clipped
+  to the shape, so it needs no separate layer, and redraw, undo, replay and the resize
+  rescale all treat it the same way. It clears the coverage cells it passes (so the paint
+  meter drops with it) and is never counted as a colour, for stars or for score.
 - The board is a single `<canvas>`. Hit testing uses `Path2D` with
   `isPointInPath`, and every stroke is clipped to its shape, so paint cannot leak
   outside the outline.
+- A stroke is followed with `setPointerCapture`, and a pointer released anywhere —
+  including outside the board — closes the stroke through a `document` level
+  `pointerup`, so a stroke never carries on from wherever the finger comes back. The
+  lock button adds a body class that turns page scrolling, panning and selection off
+  while it is on.
 - Progress is measured on a 32 × 32 coverage grid: cells whose centre falls
   inside the outline form the mask, and painting marks the cells the brush touches.
   No per-frame pixel readback. The same number drives the paint meter under the board.

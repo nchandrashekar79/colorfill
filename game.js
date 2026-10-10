@@ -35,6 +35,13 @@
     var BRUSH_SIZE_RATIO = 0.09;
     var BRUSH_MIN_CSS = 20;
     var BRUSH_MAX_CSS = 56;
+    /* The eraser is a fixed multiple of the brush: big enough to clear a mistake in one
+       or two passes, still inside the finger friendly range on the smallest shape. */
+    var ERASER_SIZE_MULTIPLIER = 1.8;
+    /* Shown on the eraser button while the eraser is the active tool. */
+    var ERASER_SYMBOL = '🧽';
+    /* Shown on the lock button while the page is held still for drawing. */
+    var LOCK_SYMBOL = '🔒';
     var COVERAGE_CELLS = 32;
     var COVERAGE_TARGET = 0.85;
     var OUTLINE_WIDTH = 3;
@@ -775,9 +782,11 @@
     var starHintEl = document.getElementById('starHint');
     var undoBtn = document.getElementById('undoBtn');
     var clearBtn = document.getElementById('clearBtn');
+    var eraserBtn = document.getElementById('eraserBtn');
     var prevBtn = document.getElementById('prevBtn');
     var nextBtn = document.getElementById('nextBtn');
     var soundBtn = document.getElementById('soundBtn');
+    var lockBtn = document.getElementById('lockBtn');
     var levelsBtn = document.getElementById('levelsBtn');
     var levelsOverlay = document.getElementById('levelsOverlay');
     var levelTabsEl = document.getElementById('levelTabs');
@@ -801,7 +810,7 @@
     var progress = loadProgress();
 
     function loadProgress() {
-        var fallback = { version: 1, stars: {}, best: {}, lastLevel: 1, muted: false };
+        var fallback = { version: 1, stars: {}, best: {}, lastLevel: 1, muted: false, locked: false };
         var raw;
         var parsed;
 
@@ -826,7 +835,8 @@
             stars: parsed.stars && typeof parsed.stars === 'object' ? parsed.stars : {},
             best: parsed.best && typeof parsed.best === 'object' ? parsed.best : {},
             lastLevel: Number.isInteger(parsed.lastLevel) ? clampLevel(parsed.lastLevel) : 1,
-            muted: parsed.muted === true
+            muted: parsed.muted === true,
+            locked: parsed.locked === true
         };
     }
 
@@ -933,6 +943,8 @@
         levelId: clampLevel(progress.lastLevel),
         palette: [],
         activeColor: null,
+        /* Which tool paints the next stroke: the brush or the eraser. */
+        tool: 'brush',
         selectedShapeId: null,
         /* Which tab of the level list is open: the shapes or the alphabet. */
         levelGroup: 'shape',
@@ -969,11 +981,19 @@
         return Math.round(Math.max(min, Math.min(max, byShape)));
     }
 
-    /** Every colour used on this level, finished shape or not. */
+    /** The stroke width of a tool: the eraser is a fixed multiple of the brush. */
+    function toolWidth(kind) {
+        var width = brushWidth();
+        return kind === 'erase' ? Math.round(width * ERASER_SIZE_MULTIPLIER) : width;
+    }
+
+    /** Every colour used on this level, finished shape or not. The eraser is not a colour. */
     function distinctColourCount() {
         var seen = new Set();
         state.strokes.forEach(function (stroke) {
-            seen.add(stroke.colour);
+            if (stroke.kind !== 'erase') {
+                seen.add(stroke.colour);
+            }
         });
         return seen.size;
     }
@@ -1126,7 +1146,7 @@
                     y: round2(current.y + (point.y - previous.y) * scale)
                 };
             });
-            stroke.width = brushWidth();
+            stroke.width = toolWidth(stroke.kind);
         });
         return true;
     }
@@ -1194,14 +1214,42 @@
         paletteEl.textContent = '';
         state.palette.forEach(function (colour, index) {
             var swatch = document.createElement('button');
+            var active = state.tool === 'brush' && colour === state.activeColor;
             swatch.type = 'button';
-            swatch.className = 'swatch' + (colour === state.activeColor ? ' is-active' : '');
+            swatch.className = 'swatch' + (active ? ' is-active' : '');
             swatch.dataset.color = colour;
             swatch.style.backgroundColor = colour;
             swatch.setAttribute('aria-label', 'Colour ' + (index + 1));
-            swatch.setAttribute('aria-pressed', colour === state.activeColor ? 'true' : 'false');
+            swatch.setAttribute('aria-pressed', active ? 'true' : 'false');
             paletteEl.appendChild(swatch);
         });
+    }
+
+    /** The eraser button and the palette both show which tool paints the next stroke. */
+    function renderTool() {
+        var erasing = state.tool === 'erase';
+        eraserBtn.className = 'btn' + (erasing ? ' is-active' : '');
+        eraserBtn.setAttribute('aria-pressed', erasing ? 'true' : 'false');
+        eraserBtn.setAttribute('aria-label', erasing ? 'Eraser, on' : 'Eraser, off');
+        eraserBtn.textContent = erasing ? ERASER_SYMBOL + ' Eraser: on' : 'Eraser';
+        renderPalette();
+    }
+
+    /** The lock button shows whether the page is held still while a stroke is drawn. */
+    function renderLock() {
+        var locked = progress.locked;
+        lockBtn.className = 'btn' + (locked ? ' is-active' : '');
+        lockBtn.setAttribute('aria-pressed', locked ? 'true' : 'false');
+        lockBtn.setAttribute('aria-label', locked ? 'Lock, on' : 'Lock, off');
+        lockBtn.textContent = locked ? LOCK_SYMBOL + ' Lock: on' : 'Lock';
+    }
+
+    /**
+     * Hold the page still: while locked the page cannot scroll, pan or select, so a
+     * stroke that reaches the edge of the board cannot drag the board out of view.
+     */
+    function applyLock() {
+        document.body.className = progress.locked ? 'is-locked' : '';
     }
 
     function outlineShape(shapeId) {
@@ -1275,8 +1323,12 @@
         return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
     }
 
-    /** Mark every grid cell the brush touched while moving from one point to the next. */
-    function markContact(grid, from, to, radius) {
+    /**
+     * Visit every grid cell the tool touches while moving from one point to the next.
+     * The scan is bounded by the box of the segment grown by the tool reach, so a
+     * stroke never walks the whole grid.
+     */
+    function eachContactCell(grid, from, to, radius, visit) {
         if (!grid) {
             return;
         }
@@ -1291,17 +1343,38 @@
         for (var row = firstRow; row <= lastRow; row++) {
             for (var column = firstColumn; column <= lastColumn; column++) {
                 var index = row * cells + column;
-                if (grid.mask[index] === 0 || grid.painted[index] === 1) {
+                if (grid.mask[index] === 0) {
                     continue;
                 }
                 var x = grid.slot.x + (column + 0.5) * step;
                 var y = grid.slot.y + (row + 0.5) * step;
                 if (distanceToSegment(x, y, from.x, from.y, to.x, to.y) <= reach) {
-                    grid.painted[index] = 1;
-                    grid.paintedCount++;
+                    visit(index);
                 }
             }
         }
+    }
+
+    /** Mark every grid cell the brush touched while moving from one point to the next. */
+    function markContact(grid, from, to, radius) {
+        eachContactCell(grid, from, to, radius, function (index) {
+            if (grid.painted[index] === 1) {
+                return;
+            }
+            grid.painted[index] = 1;
+            grid.paintedCount++;
+        });
+    }
+
+    /** Clear every painted grid cell the eraser touched while moving between two points. */
+    function unmarkContact(grid, from, to, radius) {
+        eachContactCell(grid, from, to, radius, function (index) {
+            if (grid.painted[index] === 0) {
+                return;
+            }
+            grid.painted[index] = 0;
+            grid.paintedCount--;
+        });
     }
 
     function fillGrid(grid) {
@@ -1324,12 +1397,13 @@
             fillGrid(grid);
             return;
         }
+        var contact = stroke.kind === 'erase' ? unmarkContact : markContact;
         if (stroke.points.length === 1) {
-            markContact(grid, stroke.points[0], stroke.points[0], stroke.width / 2);
+            contact(grid, stroke.points[0], stroke.points[0], stroke.width / 2);
             return;
         }
         for (var i = 1; i < stroke.points.length; i++) {
-            markContact(grid, stroke.points[i - 1], stroke.points[i], stroke.width / 2);
+            contact(grid, stroke.points[i - 1], stroke.points[i], stroke.width / 2);
         }
     }
 
@@ -1410,11 +1484,12 @@
     }
 
     function startStroke(shapeId, point) {
+        var kind = state.tool;
         state.activeStroke = {
             shapeId: shapeId,
-            colour: state.activeColor,
-            width: brushWidth(),
-            kind: 'brush',
+            colour: kind === 'erase' ? UNFILLED : state.activeColor,
+            width: toolWidth(kind),
+            kind: kind,
             points: [point]
         };
         state.strokes.push(state.activeStroke);
@@ -1434,7 +1509,8 @@
             return;
         }
         stroke.points.push(point);
-        markContact(shapeGrids[stroke.shapeId], from, point, stroke.width / 2);
+        var contact = stroke.kind === 'erase' ? unmarkContact : markContact;
+        contact(shapeGrids[stroke.shapeId], from, point, stroke.width / 2);
         drawSegment(stroke.shapeId, stroke.colour, stroke.width, from, point);
         outlineShape(stroke.shapeId);
         updateMeter();
@@ -1448,6 +1524,11 @@
         }
 
         var shapeId = stroke.shapeId;
+        if (stroke.kind === 'erase') {
+            endErase(shapeId);
+            return;
+        }
+
         var previousColour = state.filled.get(shapeId);
         if (coverageOf(shapeId) >= COVERAGE_TARGET && previousColour !== stroke.colour) {
             state.filled.set(shapeId, stroke.colour);
@@ -1459,6 +1540,21 @@
         if (state.filled.size === SHAPES_PER_LEVEL) {
             winLevel();
         }
+    }
+
+    /**
+     * An eraser stroke takes paint away. If too little of the shape is left covered the
+     * snap fill is withdrawn, so the level has to be finished again.
+     */
+    function endErase(shapeId) {
+        if (coverageOf(shapeId) < COVERAGE_TARGET) {
+            state.filled.delete(shapeId);
+            if (state.filled.size < SHAPES_PER_LEVEL) {
+                state.won = false;
+            }
+            renderBoard();
+        }
+        updateHud();
     }
 
     /** Keyboard path: fill the highlighted shape in one go. */
@@ -1491,8 +1587,16 @@
 
     function handleSwatchClick(colour) {
         state.activeColor = colour;
-        renderPalette();
+        state.tool = 'brush';
+        renderTool();
         updateMeter();
+        SFX.select();
+    }
+
+    /** Switch between painting and erasing. Picking a colour always returns to the brush. */
+    function toggleEraser() {
+        state.tool = state.tool === 'erase' ? 'brush' : 'erase';
+        renderTool();
         SFX.select();
     }
 
@@ -1505,7 +1609,9 @@
 
         var lastColour = new Map();
         state.strokes.forEach(function (stroke) {
-            lastColour.set(stroke.shapeId, stroke.colour);
+            if (stroke.kind !== 'erase') {
+                lastColour.set(stroke.shapeId, stroke.colour);
+            }
         });
 
         var nextFilled = new Map();
@@ -1584,6 +1690,7 @@
         state.levelId = clampLevel(id);
         state.palette = makePalette(currentLevel().paletteSize);
         state.activeColor = state.palette[0];
+        state.tool = 'brush';
         state.selectedShapeId = null;
         state.strokes = [];
         state.filled = new Map();
@@ -1598,7 +1705,7 @@
         syncCanvasSize();
         prepareBoard();
         resetGrids();
-        renderPalette();
+        renderTool();
         lastMeterPercent = -1;
         renderBoard();
         updateHud();
@@ -1757,6 +1864,15 @@
         }
     }
 
+    /** Lock the page for drawing, so a stroke cannot scroll the board out of view. */
+    function toggleLock() {
+        progress.locked = !progress.locked;
+        saveProgress();
+        applyLock();
+        renderLock();
+        SFX.select();
+    }
+
     /* ==========================================================
        11. Event wiring
        ========================================================== */
@@ -1792,6 +1908,10 @@
 
     canvas.addEventListener('pointerup', endStroke);
     canvas.addEventListener('pointercancel', endStroke);
+    /* A pointer released outside the board must still close the stroke, otherwise it
+       would carry on from wherever the finger comes back. */
+    document.addEventListener('pointerup', endStroke);
+    document.addEventListener('pointercancel', endStroke);
 
     canvas.addEventListener('focus', function () {
         if (state.selectedShapeId === null) {
@@ -1800,6 +1920,11 @@
     });
 
     canvas.addEventListener('keydown', function (event) {
+        if (event.key === 'e' || event.key === 'E') {
+            event.preventDefault();
+            toggleEraser();
+            return;
+        }
         if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
             quickFill(0);
@@ -1856,9 +1981,11 @@
 
     undoBtn.addEventListener('click', undo);
     clearBtn.addEventListener('click', clearLevel);
+    eraserBtn.addEventListener('click', toggleEraser);
     prevBtn.addEventListener('click', goToPreviousLevel);
     nextBtn.addEventListener('click', goToNextLevel);
     soundBtn.addEventListener('click', toggleSound);
+    lockBtn.addEventListener('click', toggleLock);
     levelsBtn.addEventListener('click', openLevels);
     closeLevelsBtn.addEventListener('click', closeOverlays);
 
@@ -1902,5 +2029,7 @@
     if (typeof window.ResizeObserver === 'function') {
         new ResizeObserver(renderBoard).observe(canvas);
     }
+    applyLock();
+    renderLock();
     loadLevel(state.levelId);
 })();
