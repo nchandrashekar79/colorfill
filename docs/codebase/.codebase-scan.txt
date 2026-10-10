@@ -1,0 +1,81 @@
+
+=== DIRECTORY TREE (max depth 3, source files only) ===
+.github
+.gitignore
+docs
+docs\codebase
+docs\codebase\.codebase-scan.txt
+game.js
+index.html
+README.md
+styles.css
+todo.md
+
+=== STACK DETECTION (manifest files) ===
+No recognized manifest files found in project root.
+
+=== ENTRY POINTS ===
+No common entry points found. Check 'main' or 'scripts.start' in manifest files above.
+
+=== LINTING AND FORMATTING CONFIG ===
+No linting or formatting config files found in project root.
+
+=== ENVIRONMENT VARIABLE TEMPLATES ===
+No .env.example or .env.template found. Identify required environment variables by searching the code and config for environment variable reads.
+
+=== TODO / FIXME / HACK (production code only, test dirs excluded) ===
+None found.
+
+=== GIT RECENT COMMITS (last 20) ===
+ea64584 Merge branch 'master' of https://github.com/nchandrashekar79/basic_game
+43e0e20 added Line Patterns to the game
+6719fdf updated
+7325191 Create todo.md
+069a207 added alphabetes to shapes
+e43b839 increased size of shape
+441e961 increased color fill shape size
+64cc44f initial code commit
+adb1f2e inital commit
+2ed3654 Initial commit
+
+=== HIGH-CHURN FILES (last 90 days, top 20) ===
+   5 README.md
+   5 game.js
+   5 index.html
+   3 styles.css
+   2 .github/copilot-instructions.md
+   1 todo.md
+   1 .gitignore
+
+=== MONOREPO SIGNALS ===
+No monorepo signals detected.
+
+=== CODE METRICS ===
+Total files scanned: 6
+Total lines of code: 1906
+
+Files by language:
+  Other: 5
+  JavaScript: 1
+
+Top 10 largest files:
+game.js: 69.1KB
+styles.css: 9.4KB
+README.md: 6.4KB
+index.html: 4.1KB
+todo.md: 0.1KB
+docs\codebase\.codebase-scan.txt: 0.0KB
+
+=== CI/CD PIPELINES ===
+No CI/CD pipelines detected.
+
+=== CONTAINERS & ORCHESTRATION ===
+No containerization configs detected.
+
+=== SECURITY & COMPLIANCE ===
+No security configs detected.
+
+=== PERFORMANCE & TESTING ===
+No performance testing configs detected.
+
+=== SCAN COMPLETE ===
